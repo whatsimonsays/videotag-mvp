@@ -30,6 +30,7 @@ func main() {
 
 	// Routes
 	r.Post("/analyze", handleAnalyze)
+	r.Get("/health", handleHealth)
 
 	log.Println("Starting VidiSnap API server on :8080")
 	log.Fatal(http.ListenAndServe(":8080", r))
@@ -140,4 +141,9 @@ func isValidVideoFile(filename string) bool {
 		".webm": true,
 	}
 	return validExtensions[ext]
+}
+
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status": "healthy", "service": "vidisnap-api"}`))
 } 
