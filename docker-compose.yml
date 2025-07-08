@@ -13,6 +13,20 @@ services:
     networks:
       - vidisnap-network
 
+  streamlit:
+    build: 
+      context: .
+      dockerfile: Dockerfile.streamlit
+    ports:
+      - "8501:8501"
+    environment:
+      - VIDISNAP_BACKEND_URL=http://processor:8000
+      - VIDISNAP_TIMEOUT=120
+    depends_on:
+      - processor
+    networks:
+      - vidisnap-network
+
 networks:
   vidisnap-network:
     driver: bridge 

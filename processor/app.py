@@ -13,11 +13,10 @@ from fastapi.responses import JSONResponse
 from PIL import Image
 from transformers import ViTImageProcessor, ViTForImageClassification
 
-# Set up logging
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("vidisnap_processor")
 
-# Global variables for model and processor
 model = None
 processor = None
 
@@ -127,7 +126,7 @@ def encode_image_to_base64(image_path: str) -> str:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to encode image: {str(e)}")
 
-# Cleanup functions
+# Cleanup functions  
 def cleanup_temp_files(*file_paths: str) -> None:
     """Safely remove temporary files."""
     for file_path in file_paths:
