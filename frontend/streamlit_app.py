@@ -50,7 +50,7 @@ if uploaded_file is not None:
                     if result.get('thumbnail_b64'):
                         thumbnail_data = base64.b64decode(result['thumbnail_b64'])
                         image = Image.open(io.BytesIO(thumbnail_data))
-                        st.image(image, caption="First frame", use_column_width=True)
+                        st.image(image, caption="First frame", use_container_width=False)
                     
                     # Display labels
                     if result.get('labels'):
@@ -60,7 +60,7 @@ if uploaded_file is not None:
                         table_data = []
                         for label_info in result['labels']:
                             label = label_info['label']
-                            score = label_info['score'] * 100  # Convert to percentage
+                            score = label_info['score'] * 100 
                             table_data.append([label, f"{score:.2f}%"])
                         
                         # Display as table
