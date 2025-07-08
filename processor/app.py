@@ -3,7 +3,9 @@ import json
 import os
 import subprocess
 import tempfile
-from typing import List, Dict, Any
+import logging
+from contextlib import asynccontextmanager
+from typing import List, Dict, Any, Tuple
 
 import torch
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -11,69 +13,90 @@ from fastapi.responses import JSONResponse
 from PIL import Image
 from transformers import ViTImageProcessor, ViTForImageClassification
 
-app = FastAPI(title="VidiSnap Processor", version="1.0.0")
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("vidisnap_processor")
 
 # Global variables for model and processor
 model = None
 processor = None
 
-@app.on_event("startup")
-async def load_model():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """Load the ViT model and processor on startup."""
     global model, processor
     
-    print("Loading ViT model...")
+    logger.info("Loading ViT model...")
     model_name = "google/vit-base-patch16-224"
     
     try:
         processor = ViTImageProcessor.from_pretrained(model_name)
         model = ViTForImageClassification.from_pretrained(model_name)
-        print(f"Model {model_name} loaded successfully")
+        logger.info(f"Model {model_name} loaded successfully")
     except Exception as e:
-        print(f"Error loading model: {e}")
+        logger.error(f"Error loading model: {e}")
         raise
+    
+    yield
+    
+    # Cleanup (if needed)
+    logger.info("Shutting down processor...")
 
-@app.post("/process")
-async def process_video(file: UploadFile = File(...)):
-    """
-    Process uploaded video file:
-    1. Save video to /tmp
-    2. Extract first frame using FFmpeg
-    3. Classify frame with ViT model
-    4. Return top-3 labels and base64 thumbnail
-    """
+app = FastAPI(title="VidiSnap Processor", version="1.0.0", lifespan=lifespan)
+
+# Validation functions
+def validate_video_file(filename: str) -> None:
+    """Validate that the uploaded file is a supported video format."""
+    valid_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'}
+    file_ext = os.path.splitext(filename.lower())[1]
+    
+    if file_ext not in valid_extensions:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid video file format. Supported formats: {', '.join(valid_extensions)}"
+        )
+
+# File handling functions
+async def save_uploaded_video(file: UploadFile) -> str:
+    """Save uploaded video file to temporary location."""
+    video_path = os.path.join("/tmp", file.filename)
+    
     try:
-        # Validate file type
-        if not file.filename.lower().endswith(('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm')):
-            raise HTTPException(status_code=400, detail="Invalid video file format")
-        
-        # Save uploaded video to /tmp
-        video_path = os.path.join("/tmp", file.filename)
         with open(video_path, "wb") as buffer:
             content = await file.read()
             buffer.write(content)
-        
-        # Extract first frame using FFmpeg
-        frame_path = os.path.join("/tmp", f"frame_{file.filename}.jpg")
-        
-        ffmpeg_cmd = [
-            "ffmpeg", "-i", video_path,
-            "-vf", "select=eq(n\\,0)",
-            "-vframes", "1",
-            frame_path,
-            "-y"
-        ]
-        
-        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            print(f"FFmpeg error: {result.stderr}")
-            raise HTTPException(status_code=500, detail="Failed to extract frame from video")
-        
+        return video_path
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save video: {str(e)}")
+
+def extract_first_frame(video_path: str, filename: str) -> str:
+    """Extract the first frame from video using FFmpeg."""
+    frame_path = os.path.join("/tmp", f"frame_{filename}.jpg")
+    
+    ffmpeg_cmd = [
+        "ffmpeg", "-i", video_path,
+        "-vf", "select=eq(n\\,0)",
+        "-vframes", "1",
+        frame_path,
+        "-y"
+    ]
+    
+    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+    
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to extract frame from video: {result.stderr}"
+        )
+    
+    return frame_path
+
+# Image processing functions
+def classify_image(image_path: str) -> List[Dict[str, Any]]:
+    """Classify image using the loaded ViT model."""
+    try:
         # Load and preprocess image
-        image = Image.open(frame_path)
-        
-        # Prepare image for model
+        image = Image.open(image_path)
         inputs = processor(images=image, return_tensors="pt")
         
         # Get predictions
@@ -85,23 +108,64 @@ async def process_video(file: UploadFile = File(...)):
         probabilities = torch.nn.functional.softmax(logits, dim=-1)
         top3_prob, top3_indices = torch.topk(probabilities, 3)
         
-        # Get labels
+        # Format results
         labels = []
         for i in range(3):
             label = model.config.id2label[top3_indices[0][i].item()]
             score = top3_prob[0][i].item()
             labels.append({"label": label, "score": round(score, 4)})
         
-        # Convert thumbnail to base64
-        with open(frame_path, "rb") as img_file:
-            thumbnail_b64 = base64.b64encode(img_file.read()).decode('utf-8')
-        
-        # Clean up temporary files
+        return labels
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image classification failed: {str(e)}")
+
+def encode_image_to_base64(image_path: str) -> str:
+    """Convert image file to base64 string."""
+    try:
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode('utf-8')
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to encode image: {str(e)}")
+
+# Cleanup functions
+def cleanup_temp_files(*file_paths: str) -> None:
+    """Safely remove temporary files."""
+    for file_path in file_paths:
         try:
-            os.remove(video_path)
-            os.remove(frame_path)
-        except:
-            pass  # Ignore cleanup errors
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            logger.warning(f"Failed to remove {file_path}: {e}")
+
+# Main processing function
+@app.post("/process")
+async def process_video(file: UploadFile = File(...)):
+    """
+    Process uploaded video file:
+    1. Validate file format
+    2. Save video to /tmp
+    3. Extract first frame using FFmpeg
+    4. Classify frame with ViT model
+    5. Return top-3 labels and base64 thumbnail
+    """
+    video_path = None
+    frame_path = None
+    
+    try:
+        # Step 1: Validate file
+        validate_video_file(file.filename)
+        
+        # Step 2: Save uploaded video
+        video_path = await save_uploaded_video(file)
+        
+        # Step 3: Extract first frame
+        frame_path = extract_first_frame(video_path, file.filename)
+        
+        # Step 4: Classify image
+        labels = classify_image(frame_path)
+        
+        # Step 5: Encode thumbnail
+        thumbnail_b64 = encode_image_to_base64(frame_path)
         
         # Return response
         response = {
@@ -114,8 +178,11 @@ async def process_video(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Processing error: {e}")
+        logger.error(f"Unexpected processing error: {e}")
         raise HTTPException(status_code=500, detail="Internal processing error")
+    finally:
+        # Always cleanup temporary files
+        cleanup_temp_files(video_path, frame_path)
 
 @app.get("/health")
 async def health_check():

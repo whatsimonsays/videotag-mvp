@@ -1,0 +1,9 @@
+{
+  "include": ["processor"],
+  "exclude": ["**/node_modules", "**/__pycache__"],
+  "ignore": ["**/*.pyc"],
+  "reportMissingImports": false,
+  "reportMissingTypeStubs": false,
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Linux"
+} 
